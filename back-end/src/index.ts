@@ -17,10 +17,6 @@ const SEED_TRACKS = [
     { title: "I Know I Know", artist: "Saiilor" },
 ];
 
-// As of right now, I do not have any "saved" songs, so I want to just use the top for default
-const CANDIDATE_SOURCE: "saved" | "top" | "playlist" = "top";
-const CANDIDATE_PLAYLIST_ID: string | null = null;
-
 const RESULT_COUNT = 30;
 
 const MAX_SCORE: number | null = null;
@@ -49,7 +45,7 @@ interface AudioFeatures {
 interface SpotifyTrack {
     id: string;
     name: string;
-    artists: { name: string }[];
+    artists: { id: string; name: string }[];
     uri: string;
 }
 
@@ -90,21 +86,46 @@ async function spotifySearchTrack(title: string, artist: string): Promise<Spotif
     return response.data.tracks.items[0] ?? null;
 }
 
-async function getCandidateTracks(): Promise<SpotifyTrack[]> {
-    const url =
-        CANDIDATE_SOURCE === "saved"
-            ? "https://api.spotify.com/v1/me/tracks?limit=50"
-            : CANDIDATE_SOURCE === "top"
-            ? "https://api.spotify.com/v1/me/top/tracks?limit=50"
-            : `https://api.spotify.com/v1/playlists/${CANDIDATE_PLAYLIST_ID}/tracks?limit=50`;
-
-    const response = await axios.get(url, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-    });
-
-    return response.data.items.map((item: any) =>
-        CANDIDATE_SOURCE === "top" ? item : item.track
+async function getArtistTopTracks(artistId: string): Promise<SpotifyTrack[]> {
+    const response = await axios.get(
+        `https://api.spotify.com/v1/artists/${artistId}/top-tracks`,
+        {
+            headers: {
+                Authorization: `Bearer ${accessToken}`,
+            },
+            params: {
+                market: "US",
+            },
+        }
     );
+
+    return response.data.tracks;
+}
+
+async function getSeedArtistCandidates(): Promise<SpotifyTrack[]> {
+    const candidates: SpotifyTrack[] = [];
+    const seen = new Set<string>();
+
+    for (const seed of SEED_TRACKS) {
+        const track = await spotifySearchTrack(seed.title, seed.artist);
+
+        if (!track) continue;
+
+        const artistId = track.artists[0]?.id;
+
+        if (!artistId) continue;
+
+        const topTracks = await getArtistTopTracks(artistId);
+
+        for (const candidate of topTracks) {
+            if (seen.has(candidate.id)) continue;
+
+            seen.add(candidate.id);
+            candidates.push(candidate);
+        }
+    }
+
+    return candidates;
 }
 
 // reccobeat functions
@@ -178,7 +199,15 @@ async function matchTracks(): Promise<{ name: string; artist: string; score: num
         target[key] = seedFeatures.reduce((sum, f) => sum + f[key], 0) / seedFeatures.length;
     }
 
-    const candidates = await getCandidateTracks();
+    const seedIds = new Set(
+        seedTracks
+            .filter((t): t is SpotifyTrack => t !== null)
+            .map((t) => t.id)
+    );
+
+    const candidates = (await getSeedArtistCandidates())
+        .filter(track => !seedIds.has(track.id));
+        
     const featuresList = await mapLimit(candidates, 5, (track) =>
         getAudioFeatures(track.id)
     );
